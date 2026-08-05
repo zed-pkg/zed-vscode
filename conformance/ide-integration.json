@@ -1,0 +1,24 @@
+{
+  "schema": "zed-pkg/ide-integration-conformance/v1",
+  "integration": "vscode",
+  "repository": "zed-pkg/zed-vscode",
+  "contractVersion": 1,
+  "level": {"core": "pass", "nativeShell": "candidate", "distribution": "candidate"},
+  "capabilities": {
+    "multiRootDiscovery": true,
+    "manifestDiagnostics": true,
+    "lockDiagnostics": true,
+    "materializationDiagnostics": true,
+    "stagingRecovery": true,
+    "cliValidation": true,
+    "argvExecution": true,
+    "boundedExecution": true,
+    "outputRedaction": true,
+    "explicitMutationConfirmation": true,
+    "versionedInspectAdapter": "pending-zed-cli-191",
+    "deterministicFallback": true,
+    "nativeUnitTests": true,
+    "retainedArtifact": false
+  },
+  "linearIssue": "DEN-2508"
+}

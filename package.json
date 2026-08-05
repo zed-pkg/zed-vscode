@@ -1,0 +1,74 @@
+{
+  "name": "zed-package-insights",
+  "displayName": "Zed Package Insights",
+  "description": "Zed Package Manager state, diagnostics, and confirmation-gated recommended actions for Visual Studio Code.",
+  "version": "0.1.0",
+  "publisher": "zed-pkg",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": ["Other", "Linters"],
+  "keywords": ["zed-pkg", "package manager", "dependencies", "lockfile"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zed-pkg/zed-vscode.git"
+  },
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "workspaceContains:**/.zpkg.toml",
+    "workspaceContains:**/.zpkg.lock"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "package": "npx --yes @vscode/vsce package"
+  },
+  "contributes": {
+    "commands": [
+      {"command": "zedPackageInsights.refresh", "title": "Zed: Refresh Package Insights"},
+      {"command": "zedPackageInsights.show", "title": "Zed: Show Package Insights"},
+      {"command": "zedPackageInsights.actions", "title": "Zed: Recommended Actions"},
+      {"command": "zedPackageInsights.openSettings", "title": "Preferences: Zed Package Insights Settings"}
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {"id": "zedPackageInsights", "title": "Zed Packages", "icon": "resources/zed.svg"}
+      ]
+    },
+    "views": {
+      "zedPackageInsights": [
+        {"id": "zedPackageInsights.packages", "name": "Package Insights"}
+      ]
+    },
+    "configuration": {
+      "title": "Zed Package Insights",
+      "properties": {
+        "zedPackageInsights.zedPath": {
+          "type": "string",
+          "default": "zed",
+          "description": "Path to the zed-pkg CLI. Use an absolute path when the unrelated Zed editor launcher is also installed."
+        },
+        "zedPackageInsights.inspectTimeoutMs": {
+          "type": "number",
+          "default": 8000,
+          "minimum": 500,
+          "maximum": 120000,
+          "description": "Maximum time for read-only CLI inspection."
+        },
+        "zedPackageInsights.actionTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 1000,
+          "maximum": 900000,
+          "description": "Maximum time for a user-confirmed mutating action."
+        },
+        "zedPackageInsights.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Refresh when Zed package-state files change."
+        }
+      }
+    }
+  }
+}
