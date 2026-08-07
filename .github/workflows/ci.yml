@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm test
+      - run: npm run verify
+
+  package:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: mkdir -p dist && npx --yes @vscode/vsce@3.9.2 package --out dist/zed-package-insights.vsix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zed-package-insights-${{ github.sha }}
+          path: dist/zed-package-insights.vsix
+          if-no-files-found: error
+          retention-days: 30

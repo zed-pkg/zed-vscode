@@ -3,7 +3,7 @@
   "integration": "vscode",
   "repository": "zed-pkg/zed-vscode",
   "contractVersion": 1,
-  "level": {"core": "pass", "nativeShell": "candidate", "distribution": "candidate"},
+  "level": {"core": "pass", "nativeShell": "pass", "distribution": "repo-ci"},
   "capabilities": {
     "multiRootDiscovery": true,
     "manifestDiagnostics": true,
@@ -18,7 +18,9 @@
     "versionedInspectAdapter": "pending-zed-cli-191",
     "deterministicFallback": true,
     "nativeUnitTests": true,
-    "retainedArtifact": false
+    "repoLocalCI": true,
+    "retainedArtifact": true
   },
+  "remaining": ["clean VS Code extension-host test", "Marketplace signing/publication"],
   "linearIssue": "DEN-2508"
 }
