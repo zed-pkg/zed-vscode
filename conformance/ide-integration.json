@@ -3,7 +3,7 @@
   "integration": "vscode",
   "repository": "zed-pkg/zed-vscode",
   "contractVersion": 1,
-  "level": {"core": "pass", "nativeShell": "pass", "distribution": "repo-ci"},
+  "level": {"core": "pass", "nativeShell": "pass", "distribution": "clean-host-ci"},
   "capabilities": {
     "multiRootDiscovery": true,
     "manifestDiagnostics": true,
@@ -19,8 +19,15 @@
     "deterministicFallback": true,
     "nativeUnitTests": true,
     "repoLocalCI": true,
+    "cleanExtensionHostTest": true,
+    "lockedBuildToolchain": true,
+    "immutableWorkflowInputs": true,
+    "fixedRunnerImages": true,
     "retainedArtifact": true
   },
-  "remaining": ["clean VS Code extension-host test", "Marketplace signing/publication"],
+  "remaining": [
+    "final shared inspect schema adoption",
+    "Marketplace signing/publication and final artifact provenance"
+  ],
   "linearIssue": "DEN-2508"
 }
