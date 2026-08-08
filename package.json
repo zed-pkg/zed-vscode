@@ -22,7 +22,13 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.js",
-    "package": "npx --yes @vscode/vsce package"
+    "test:extension": "node test/integration/run.js",
+    "verify": "node scripts/verify-repository.js",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "2.5.2",
+    "@vscode/vsce": "3.9.2"
   },
   "contributes": {
     "commands": [
