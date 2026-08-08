@@ -244,7 +244,7 @@ function fallbackReport(root, cliFailure = '') {
   const hasLock = fs.existsSync(lock);
   const issues = [];
 
-  const commandAction = (id, title, args, {requiresNetwork = true, executesPackageCode = false} = {}) => ({
+  const commandAction = (id, title, args, {requiresNetwork = true, executesPackageCode = args[0] === 'install'} = {}) => ({
     id, title, kind: 'command', command: 'zed', arguments: args,
     requiresConfirmation: true, workingDirectory: absoluteRoot,
     mutatesProject: true, requiresNetwork, executesPackageCode,
