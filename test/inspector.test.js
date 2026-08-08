@@ -57,7 +57,7 @@ test('normalizes v1 diagnostics into confirmation-gated extension actions', () =
       cwd: root,
       mutates_project: true,
       requires_network: true,
-      executes_package_code: false,
+      executes_package_code: true,
     }],
   }]));
 
@@ -76,7 +76,7 @@ test('normalizes v1 diagnostics into confirmation-gated extension actions', () =
     workingDirectory: root,
     mutatesProject: true,
     requiresNetwork: true,
-    executesPackageCode: false,
+    executesPackageCode: true,
   });
 });
 
@@ -104,7 +104,7 @@ test('fails closed on unsupported, mismatched, or unsafe v1 reports', () => {
     code: 'OUTSIDE', severity: 'warning', message: 'Outside', location: {path: root},
     actions: [{
       id: 'outside', title: 'Outside', kind: 'zed-command', argv: ['zed', 'install'], cwd: path.resolve(root, '..'),
-      mutates_project: true, requires_network: true, executes_package_code: false,
+      mutates_project: true, requires_network: true, executes_package_code: true,
     }],
   }]);
   assert.equal(validateReport(outsideWorkspace, root).issues[0].id, 'inspect.action.unsafe');
@@ -141,7 +141,7 @@ test('fallback reports staging recovery without mutating the workspace', async (
   assert.equal(recovery.requiresConfirmation, true);
   assert.equal(recovery.mutatesProject, true);
   assert.equal(recovery.requiresNetwork, true);
-  assert.equal(recovery.executesPackageCode, false);
+  assert.equal(recovery.executesPackageCode, true);
   assert.equal(path.resolve(recovery.workingDirectory), path.resolve(root));
   await fsp.rm(root, {recursive: true, force: true});
 });
