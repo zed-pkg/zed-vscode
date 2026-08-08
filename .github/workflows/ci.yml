@@ -37,7 +37,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '22'
-      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: xvfb-run -a npm run test:extension
 
   package:
@@ -51,15 +51,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '22'
-      - name: Resolve exact development dependencies and emit lock candidate
-        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: package-lock-${{ github.sha }}
-          path: package-lock.json
-          if-no-files-found: error
-          retention-days: 7
-      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: mkdir -p dist && npm run package -- --out dist/zed-package-insights.vsix
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
