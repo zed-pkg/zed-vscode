@@ -38,9 +38,22 @@ function schemaMajor(value) {
   return match ? Number(match[1]) : null;
 }
 
+function canonicalPath(value) {
+  const resolved = path.resolve(value);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function pathsEquivalent(left, right) {
+  return canonicalPath(left) === canonicalPath(right);
+}
+
 function pathWithin(root, candidate) {
-  const absoluteRoot = path.resolve(root);
-  const absoluteCandidate = path.resolve(candidate);
+  const absoluteRoot = canonicalPath(root);
+  const absoluteCandidate = canonicalPath(candidate);
   const relative = path.relative(absoluteRoot, absoluteCandidate);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
@@ -56,7 +69,7 @@ function normalizeV1Action(action, root) {
   if (typeof action.mutates_project !== 'boolean' || typeof action.requires_network !== 'boolean' || typeof action.executes_package_code !== 'boolean') {
     throw new Error(`Rejected incomplete inspect action metadata '${action?.id || 'unknown'}'.`);
   }
-  const workingDirectory = path.resolve(action.cwd || root);
+  const workingDirectory = canonicalPath(action.cwd || root);
   if (!pathWithin(root, workingDirectory)) {
     throw new Error(`Rejected inspect action outside workspace '${action?.id || 'unknown'}'.`);
   }
@@ -70,6 +83,9 @@ function normalizeV1Action(action, root) {
     // the existing modal confirmation, even if a future v1 action is read-only.
     requiresConfirmation: true,
     workingDirectory,
+    mutatesProject: action.mutates_project,
+    requiresNetwork: action.requires_network,
+    executesPackageCode: action.executes_package_code,
   };
 }
 
@@ -86,6 +102,10 @@ function validateReport(report, root) {
   ) {
     return failedReport(root, 'Rejected Zed inspection report without the v1 read-only/offline safety declaration.', 'inspect.schema.unsafe');
   }
+  const reportRoot = canonicalPath(report.root || root);
+  if (!pathsEquivalent(root, reportRoot)) {
+    return failedReport(root, 'Rejected Zed inspection report for a different project root.', 'inspect.schema.unsafe');
+  }
   try {
     const issues = (Array.isArray(report.diagnostics) ? report.diagnostics : []).map((diagnostic) => {
       const locationPath = diagnostic?.location?.path ? String(diagnostic.location.path) : '';
@@ -96,12 +116,12 @@ function validateReport(report, root) {
         title: String(diagnostic?.message || diagnostic?.code || 'Zed package issue'),
         detail: redact(diagnostic?.detail || ''),
         files,
-        actions: (Array.isArray(diagnostic?.actions) ? diagnostic.actions : []).map((action) => normalizeV1Action(action, root)),
+        actions: (Array.isArray(diagnostic?.actions) ? diagnostic.actions : []).map((action) => normalizeV1Action(action, reportRoot)),
       };
     });
     return {
       schemaVersion: SCHEMA_VERSION,
-      workspaceRoot: path.resolve(report.root || root),
+      workspaceRoot: reportRoot,
       zedVersion: null,
       source: 'cli',
       issues,
@@ -224,13 +244,14 @@ function fallbackReport(root, cliFailure = '') {
   const hasLock = fs.existsSync(lock);
   const issues = [];
 
-  const commandAction = (id, title, args) => ({
+  const commandAction = (id, title, args, {requiresNetwork = true, executesPackageCode = false} = {}) => ({
     id, title, kind: 'command', command: 'zed', arguments: args,
     requiresConfirmation: true, workingDirectory: absoluteRoot,
+    mutatesProject: true, requiresNetwork, executesPackageCode,
   });
 
   if (!hasManifest && !hasLock) {
-    issues.push({id: 'ZED001', severity: 'info', title: 'Folder is not a Zed package', detail: 'No .zpkg.toml or .zpkg.lock was found.', files: [], actions: [commandAction('zed.init', 'Initialize package', ['init'])]});
+    issues.push({id: 'ZED001', severity: 'info', title: 'Folder is not a Zed package', detail: 'No .zpkg.toml or .zpkg.lock was found.', files: [], actions: [commandAction('zed.init', 'Initialize package', ['init'], {requiresNetwork: false})]});
   } else if (!hasManifest && hasLock) {
     issues.push({id: 'ZED002', severity: 'warning', title: 'Lockfile exists without a manifest', detail: 'Restore the frozen package state without generating a manifest.', files: [lock], actions: [commandAction('zed.restoreFrozen', 'Restore frozen state', ['install', '--frozen', '--do-not-write-new-manifest'])]});
   } else if (hasManifest && !hasLock) {
