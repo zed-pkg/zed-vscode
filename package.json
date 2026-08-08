@@ -23,7 +23,10 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "verify": "node scripts/verify-repository.js",
-    "package": "npx --yes @vscode/vsce@3.9.2 package"
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "3.9.2"
   },
   "contributes": {
     "commands": [
