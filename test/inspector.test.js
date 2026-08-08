@@ -74,16 +74,22 @@ test('normalizes v1 diagnostics into confirmation-gated extension actions', () =
     arguments: ['install'],
     requiresConfirmation: true,
     workingDirectory: root,
+    mutatesProject: true,
+    requiresNetwork: true,
+    executesPackageCode: false,
   });
 });
 
-test('fails closed on unsupported or unsafe v1 reports', () => {
+test('fails closed on unsupported, mismatched, or unsafe v1 reports', () => {
   const root = path.resolve('/workspace');
   assert.equal(validateReport({schema_version: '2.0'}, root).issues[0].id, 'inspect.schema.unsupported');
 
   const unsafeDeclaration = safeCliReport(root);
   unsafeDeclaration.cli.offline = false;
   assert.equal(validateReport(unsafeDeclaration, root).issues[0].id, 'inspect.schema.unsafe');
+
+  const wrongRoot = safeCliReport(path.resolve('/other-workspace'));
+  assert.equal(validateReport(wrongRoot, root).issues[0].id, 'inspect.schema.unsafe');
 
   const unsafeExecutable = safeCliReport(root, [{
     code: 'UNSAFE', severity: 'warning', message: 'Unsafe', location: {path: root},
@@ -133,6 +139,9 @@ test('fallback reports staging recovery without mutating the workspace', async (
   assert.equal(fs.readFileSync(path.join(root, '.zpkg-staging', 'journal.json'), 'utf8'), before);
   const recovery = report.issues.find((issue) => issue.id === 'ZED007').actions[0];
   assert.equal(recovery.requiresConfirmation, true);
+  assert.equal(recovery.mutatesProject, true);
+  assert.equal(recovery.requiresNetwork, true);
+  assert.equal(recovery.executesPackageCode, false);
   assert.equal(path.resolve(recovery.workingDirectory), path.resolve(root));
   await fsp.rm(root, {recursive: true, force: true});
 });
