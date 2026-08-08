@@ -37,7 +37,16 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '22'
-      - run: mkdir -p dist && npx --yes @vscode/vsce@3.9.2 package --out dist/zed-package-insights.vsix
+      - name: Resolve exact packaging dependency and emit lock candidate
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-lock-${{ github.sha }}
+          path: package-lock.json
+          if-no-files-found: error
+          retention-days: 7
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: mkdir -p dist && npm run package -- --out dist/zed-package-insights.vsix
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: zed-package-insights-${{ github.sha }}
