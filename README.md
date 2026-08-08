@@ -10,12 +10,18 @@ Implemented surface:
 - exact executable, argv, and cwd preview before mutation;
 - mandatory modal confirmation for command actions;
 - no-shell process execution, timeout, no-color environment, and credential redaction;
-- Node unit tests, repository contract verification, cross-platform CI, and retained VSIX artifacts.
+- Node unit tests and repository-contract verification on fixed Linux/macOS/Windows runners;
+- a clean VS Code Extension Development Host test using disposable user data, a disposable fixture workspace, and an intentionally unavailable CLI;
+- a committed npm lock with exact `@vscode/test-electron` and `@vscode/vsce` tool identities, enforced through `npm ci`;
+- immutable third-party Action pins and unpersisted checkout credentials in permanent CI;
+- retained VSIX artifacts.
 
 ```sh
+npm ci --ignore-scripts --no-audit --no-fund
 npm test
 npm run verify
+xvfb-run -a npm run test:extension
 npm run package
 ```
 
-The dedicated repository is established. Remaining distribution gates are a clean VS Code extension-host test and Marketplace signing/publication.
+The dedicated repository and clean Extension Host gate are established. Remaining distribution gates are adoption of the final shared `zed inspect` schema and Marketplace signing/publication with final artifact provenance.
