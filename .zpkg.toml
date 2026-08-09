@@ -1,0 +1,23 @@
+[package]
+org = "zed-pkg"
+name = "zed-vscode"
+version = "0.1.0"
+description = "VS Code extension for Zed package state, diagnostics, and confirmation-gated actions"
+license = "MIT"
+keywords = ["zed-pkg", "package-manager"]
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/zed-pkg/zed-vscode"
+
+[publish]
+include_readme = true
+tag_format = "v{version}"
+exclude = [".env", ".env.*", ".direnv/**", ".zed/**", ".zed-pack/**", ".vendor/.zed/**", "target/**", "**/target/**", "**/node_modules/**", "tmp/**", "**/*.log", ".DS_Store"]
+
+[install]
+dir = ".vendor/.zed"
+
+[targets.repository]
+dir = "."
+adapter = "none"
