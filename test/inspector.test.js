@@ -14,6 +14,21 @@ const {
   discoverPackageRoots,
 } = require('../src/inspector');
 
+function safeCliReport(root, diagnostics = []) {
+  return {
+    schema_version: '1.0',
+    root,
+    cli: {
+      implementation: 'zed-pkg',
+      command: 'inspect',
+      offline: true,
+      mutates_project: false,
+      loads_credentials: false,
+    },
+    diagnostics,
+  };
+}
+
 test('redacts assignment, bearer, and GitHub token shapes', () => {
   const value = redact('Authorization: Bearer abc.def token=secret ghp_abcdefghijklmnopqrstuvwxyz');
   assert.equal(value.includes('secret'), false);
@@ -21,21 +36,78 @@ test('redacts assignment, bearer, and GitHub token shapes', () => {
   assert.match(value, /\[REDACTED\]/);
 });
 
-test('constructs an argv inspection command', () => {
+test('constructs the stable v1 argv inspection command', () => {
   const root = path.resolve('work space');
-  assert.deepEqual(inspectArgs(root), ['inspect', '--workspace', root, '--json']);
+  assert.deepEqual(inspectArgs(root), ['inspect', '--format', 'json', '--root', root]);
 });
 
-test('rejects unsupported schemas and unsafe command actions', () => {
+test('normalizes v1 diagnostics into confirmation-gated extension actions', () => {
   const root = path.resolve('/workspace');
-  assert.equal(validateReport({schemaVersion: 2, issues: []}, root).issues[0].id, 'inspect.schema.unsupported');
-  const report = validateReport({
-    schemaVersion: 1,
-    workspaceRoot: root,
-    issues: [{id: 'lock.stale', severity: 'warning', title: 'Stale', detail: 'token=x', actions: [{id: 'install', title: 'Install', kind: 'command', command: 'zed', arguments: ['install'], requiresConfirmation: false}]}]
-  }, root);
-  assert.equal(report.issues[0].id, 'inspect.action.unsafe');
-  assert.equal(report.issues[0].detail.includes('token=x'), false);
+  const report = validateReport(safeCliReport(root, [{
+    code: 'LOCK_MISSING',
+    severity: 'warning',
+    message: 'No lockfile exists.',
+    detail: 'token=secret',
+    location: {path: path.join(root, '.zpkg.lock')},
+    actions: [{
+      id: 'create-lock',
+      title: 'Resolve and create the lockfile',
+      kind: 'zed-command',
+      argv: ['zed', 'install'],
+      cwd: root,
+      mutates_project: true,
+      requires_network: true,
+      executes_package_code: true,
+    }],
+  }]));
+
+  assert.equal(report.source, 'cli');
+  assert.equal(report.issues.length, 1);
+  assert.equal(report.issues[0].id, 'LOCK_MISSING');
+  assert.equal(report.issues[0].detail.includes('secret'), false);
+  assert.deepEqual(report.issues[0].files, [path.join(root, '.zpkg.lock')]);
+  assert.deepEqual(report.issues[0].actions[0], {
+    id: 'create-lock',
+    title: 'Resolve and create the lockfile',
+    kind: 'command',
+    command: 'zed',
+    arguments: ['install'],
+    requiresConfirmation: true,
+    workingDirectory: root,
+    mutatesProject: true,
+    requiresNetwork: true,
+    executesPackageCode: true,
+  });
+});
+
+test('fails closed on unsupported, mismatched, or unsafe v1 reports', () => {
+  const root = path.resolve('/workspace');
+  assert.equal(validateReport({schema_version: '2.0'}, root).issues[0].id, 'inspect.schema.unsupported');
+
+  const unsafeDeclaration = safeCliReport(root);
+  unsafeDeclaration.cli.offline = false;
+  assert.equal(validateReport(unsafeDeclaration, root).issues[0].id, 'inspect.schema.unsafe');
+
+  const wrongRoot = safeCliReport(path.resolve('/other-workspace'));
+  assert.equal(validateReport(wrongRoot, root).issues[0].id, 'inspect.schema.unsafe');
+
+  const unsafeExecutable = safeCliReport(root, [{
+    code: 'UNSAFE', severity: 'warning', message: 'Unsafe', location: {path: root},
+    actions: [{
+      id: 'shell', title: 'Shell', kind: 'zed-command', argv: ['sh', '-c', 'echo nope'], cwd: root,
+      mutates_project: true, requires_network: false, executes_package_code: true,
+    }],
+  }]);
+  assert.equal(validateReport(unsafeExecutable, root).issues[0].id, 'inspect.action.unsafe');
+
+  const outsideWorkspace = safeCliReport(root, [{
+    code: 'OUTSIDE', severity: 'warning', message: 'Outside', location: {path: root},
+    actions: [{
+      id: 'outside', title: 'Outside', kind: 'zed-command', argv: ['zed', 'install'], cwd: path.resolve(root, '..'),
+      mutates_project: true, requires_network: true, executes_package_code: true,
+    }],
+  }]);
+  assert.equal(validateReport(outsideWorkspace, root).issues[0].id, 'inspect.action.unsafe');
 });
 
 test('discovers nested package roots and skips dependency trees', async () => {
@@ -67,6 +139,9 @@ test('fallback reports staging recovery without mutating the workspace', async (
   assert.equal(fs.readFileSync(path.join(root, '.zpkg-staging', 'journal.json'), 'utf8'), before);
   const recovery = report.issues.find((issue) => issue.id === 'ZED007').actions[0];
   assert.equal(recovery.requiresConfirmation, true);
+  assert.equal(recovery.mutatesProject, true);
+  assert.equal(recovery.requiresNetwork, true);
+  assert.equal(recovery.executesPackageCode, true);
   assert.equal(path.resolve(recovery.workingDirectory), path.resolve(root));
   await fsp.rm(root, {recursive: true, force: true});
 });

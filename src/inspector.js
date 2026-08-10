@@ -6,6 +6,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const SCHEMA_VERSION = 1;
+const INSPECT_SCHEMA_MAJOR = 1;
 const IGNORED_DIRECTORIES = new Set([
   '.git', '.hg', '.svn', '.idea', '.vscode', 'node_modules', 'zed_modules',
   'target', 'build', 'dist', '.dart_tool', '.gradle', '.vendor'
@@ -29,45 +30,99 @@ function displayCommand(executable, args) {
 }
 
 function inspectArgs(workspaceRoot) {
-  return ['inspect', '--workspace', path.resolve(workspaceRoot), '--json'];
+  return ['inspect', '--format', 'json', '--root', path.resolve(workspaceRoot)];
 }
 
-function normalizeAction(action, root) {
-  const kind = String(action?.kind || '');
-  const command = String(action?.command || '');
-  const args = Array.isArray(action?.arguments) ? action.arguments.map(String) : [];
-  const requiresConfirmation = Boolean(action?.requiresConfirmation);
-  if (kind === 'command' && !requiresConfirmation) {
-    throw new Error(`Rejected unsafe command action '${action?.id || 'unknown'}'.`);
+function schemaMajor(value) {
+  const match = /^(\d+)\./.exec(String(value || ''));
+  return match ? Number(match[1]) : null;
+}
+
+function canonicalPath(value) {
+  const resolved = path.resolve(value);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function pathsEquivalent(left, right) {
+  return canonicalPath(left) === canonicalPath(right);
+}
+
+function pathWithin(root, candidate) {
+  const absoluteRoot = canonicalPath(root);
+  const absoluteCandidate = canonicalPath(candidate);
+  const relative = path.relative(absoluteRoot, absoluteCandidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function normalizeV1Action(action, root) {
+  if (!action || action.kind !== 'zed-command') {
+    throw new Error(`Rejected unsupported inspect action kind '${action?.kind || 'unknown'}'.`);
+  }
+  const argv = Array.isArray(action.argv) ? action.argv.map(String) : [];
+  if (!argv.length || argv[0] !== 'zed') {
+    throw new Error(`Rejected unsafe inspect action executable '${argv[0] || 'missing'}'.`);
+  }
+  if (typeof action.mutates_project !== 'boolean' || typeof action.requires_network !== 'boolean' || typeof action.executes_package_code !== 'boolean') {
+    throw new Error(`Rejected incomplete inspect action metadata '${action?.id || 'unknown'}'.`);
+  }
+  const workingDirectory = canonicalPath(action.cwd || root);
+  if (!pathWithin(root, workingDirectory)) {
+    throw new Error(`Rejected inspect action outside workspace '${action?.id || 'unknown'}'.`);
   }
   return {
-    id: String(action?.id || 'unknown'),
-    title: String(action?.title || action?.id || 'Zed action'),
-    kind,
-    command,
-    arguments: args,
-    requiresConfirmation,
-    workingDirectory: path.resolve(action?.workingDirectory || root),
+    id: String(action.id || 'unknown'),
+    title: String(action.title || action.id || 'Zed action'),
+    kind: 'command',
+    command: 'zed',
+    arguments: argv.slice(1),
+    // Command recommendations are never executable from the extension without
+    // the existing modal confirmation, even if a future v1 action is read-only.
+    requiresConfirmation: true,
+    workingDirectory,
+    mutatesProject: action.mutates_project,
+    requiresNetwork: action.requires_network,
+    executesPackageCode: action.executes_package_code,
   };
 }
 
 function validateReport(report, root) {
-  if (!report || report.schemaVersion !== SCHEMA_VERSION) {
-    return failedReport(root, 'Unsupported Zed inspection schema; expected schemaVersion 1.', 'inspect.schema.unsupported');
+  if (!report || schemaMajor(report.schema_version) !== INSPECT_SCHEMA_MAJOR) {
+    return failedReport(root, 'Unsupported Zed inspection schema; expected schema_version 1.x.', 'inspect.schema.unsupported');
+  }
+  if (
+    report.cli?.implementation !== 'zed-pkg' ||
+    report.cli?.command !== 'inspect' ||
+    report.cli?.offline !== true ||
+    report.cli?.mutates_project !== false ||
+    report.cli?.loads_credentials !== false
+  ) {
+    return failedReport(root, 'Rejected Zed inspection report without the v1 read-only/offline safety declaration.', 'inspect.schema.unsafe');
+  }
+  const reportRoot = canonicalPath(report.root || root);
+  if (!pathsEquivalent(root, reportRoot)) {
+    return failedReport(root, 'Rejected Zed inspection report for a different project root.', 'inspect.schema.unsafe');
   }
   try {
-    const issues = (Array.isArray(report.issues) ? report.issues : []).map((issue) => ({
-      id: String(issue?.id || 'inspect.issue.unknown'),
-      severity: String(issue?.severity || 'warning').toLowerCase(),
-      title: String(issue?.title || issue?.id || 'Zed package issue'),
-      detail: redact(issue?.detail || ''),
-      files: Array.isArray(issue?.files) ? issue.files.map(String) : [],
-      actions: (Array.isArray(issue?.actions) ? issue.actions : []).map((action) => normalizeAction(action, root)),
-    }));
+    const issues = (Array.isArray(report.diagnostics) ? report.diagnostics : []).map((diagnostic) => {
+      const locationPath = diagnostic?.location?.path ? String(diagnostic.location.path) : '';
+      const files = locationPath ? [locationPath] : [];
+      return {
+        id: String(diagnostic?.code || 'inspect.issue.unknown'),
+        severity: String(diagnostic?.severity || 'warning').toLowerCase(),
+        title: String(diagnostic?.message || diagnostic?.code || 'Zed package issue'),
+        detail: redact(diagnostic?.detail || ''),
+        files,
+        actions: (Array.isArray(diagnostic?.actions) ? diagnostic.actions : []).map((action) => normalizeV1Action(action, reportRoot)),
+      };
+    });
     return {
       schemaVersion: SCHEMA_VERSION,
-      workspaceRoot: path.resolve(report.workspaceRoot || root),
-      zedVersion: report.zedVersion ? String(report.zedVersion) : null,
+      workspaceRoot: reportRoot,
+      zedVersion: null,
       source: 'cli',
       issues,
     };
@@ -189,13 +244,14 @@ function fallbackReport(root, cliFailure = '') {
   const hasLock = fs.existsSync(lock);
   const issues = [];
 
-  const commandAction = (id, title, args) => ({
+  const commandAction = (id, title, args, {requiresNetwork = true, executesPackageCode = args[0] === 'install'} = {}) => ({
     id, title, kind: 'command', command: 'zed', arguments: args,
     requiresConfirmation: true, workingDirectory: absoluteRoot,
+    mutatesProject: true, requiresNetwork, executesPackageCode,
   });
 
   if (!hasManifest && !hasLock) {
-    issues.push({id: 'ZED001', severity: 'info', title: 'Folder is not a Zed package', detail: 'No .zpkg.toml or .zpkg.lock was found.', files: [], actions: [commandAction('zed.init', 'Initialize package', ['init'])]});
+    issues.push({id: 'ZED001', severity: 'info', title: 'Folder is not a Zed package', detail: 'No .zpkg.toml or .zpkg.lock was found.', files: [], actions: [commandAction('zed.init', 'Initialize package', ['init'], {requiresNetwork: false})]});
   } else if (!hasManifest && hasLock) {
     issues.push({id: 'ZED002', severity: 'warning', title: 'Lockfile exists without a manifest', detail: 'Restore the frozen package state without generating a manifest.', files: [lock], actions: [commandAction('zed.restoreFrozen', 'Restore frozen state', ['install', '--frozen', '--do-not-write-new-manifest'])]});
   } else if (hasManifest && !hasLock) {

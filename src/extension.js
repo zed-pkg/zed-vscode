@@ -71,6 +71,11 @@ function config() {
   };
 }
 
+function actionRisk(action) {
+  const label = (value) => value === true ? 'yes' : value === false ? 'no' : 'unknown';
+  return `mutates project: ${label(action.mutatesProject)}; network: ${label(action.requiresNetwork)}; package code: ${label(action.executesPackageCode)}`;
+}
+
 function renderReports(output) {
   output.clear();
   for (const report of reports) {
@@ -80,7 +85,9 @@ function renderReports(output) {
       output.appendLine(`[${issue.severity.toUpperCase()}] ${issue.id}: ${issue.title}`);
       if (issue.detail) output.appendLine(`  ${issue.detail}`);
       for (const action of issue.actions || []) {
-        if (action.kind === 'command') output.appendLine(`  action: ${displayCommand(action.command, action.arguments)} (cwd: ${action.workingDirectory})`);
+        if (action.kind === 'command') {
+          output.appendLine(`  action: ${displayCommand(action.command, action.arguments)} (cwd: ${action.workingDirectory}; ${actionRisk(action)})`);
+        }
       }
     }
     output.appendLine('');
@@ -137,7 +144,9 @@ async function runRecommendedAction(provider, collection, output) {
   const selected = await vscode.window.showQuickPick(actions.map((item) => ({
     label: item.action.title,
     description: path.basename(item.report.workspaceRoot),
-    detail: item.action.kind === 'command' ? `${displayCommand(item.action.command, item.action.arguments)} — cwd: ${item.action.workingDirectory}` : item.action.command,
+    detail: item.action.kind === 'command'
+      ? `${displayCommand(item.action.command, item.action.arguments)} — cwd: ${item.action.workingDirectory} — ${actionRisk(item.action)}`
+      : item.action.command,
     item,
   })), {placeHolder: 'Select a Zed recommended action'});
   if (!selected) return;
@@ -156,13 +165,14 @@ async function runRecommendedAction(provider, collection, output) {
   }
   const choice = await vscode.window.showWarningMessage(
     `Run this command?\n\n${displayCommand(action.command, action.arguments)}\n\ncwd: ${action.workingDirectory}`,
-    {modal: true, detail: 'Zed Package Insights never mutates package state without confirmation.'},
+    {modal: true, detail: `Zed Package Insights never mutates package state without confirmation.\n\n${actionRisk(action)}`},
     'Run Command'
   );
   if (choice !== 'Run Command') return;
   output.show(true);
   output.appendLine(`$ ${displayCommand(action.command, action.arguments)}`);
   output.appendLine(`cwd: ${action.workingDirectory}`);
+  output.appendLine(`risk: ${actionRisk(action)}`);
   try {
     const result = await runProcess(action.command, action.arguments, action.workingDirectory, config().actionTimeoutMs);
     output.appendLine(`exit: ${result.code}`);
