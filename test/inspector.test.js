@@ -59,7 +59,7 @@ test('normalizes v1 diagnostics into confirmation-gated extension actions', () =
       requires_network: true,
       executes_package_code: true,
     }],
-  }]));
+  }]), root);
 
   assert.equal(report.source, 'cli');
   assert.equal(report.issues.length, 1);
