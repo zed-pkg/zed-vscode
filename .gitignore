@@ -2,3 +2,7 @@
 tmp/temp/
 tmp/worktrees/
 # <<< ores fleet hygiene <<<
+
+# Local temporary directories and Git worktrees (DEN-3956).
+tmp/
+temp/
