@@ -8,8 +8,16 @@
   "engines": {
     "vscode": "^1.95.0"
   },
-  "categories": ["Other", "Linters"],
-  "keywords": ["zed-pkg", "package manager", "dependencies", "lockfile"],
+  "categories": [
+    "Other",
+    "Linters"
+  ],
+  "keywords": [
+    "zed-pkg",
+    "package manager",
+    "dependencies",
+    "lockfile"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/zed-pkg/zed-vscode.git"
@@ -24,7 +32,9 @@
     "test": "node --test test/*.test.js",
     "test:extension": "node test/integration/run.js",
     "verify": "node scripts/verify-repository.js",
-    "package": "vsce package"
+    "package": "vsce package",
+    "lint:ores": "if [ -f .ores-lint/lint.sh ]; then sh .ores-lint/lint.sh; else echo 'ores-lint not installed'; fi",
+    "prepublishOnly": "npm run lint:ores"
   },
   "devDependencies": {
     "@vscode/test-electron": "2.5.2",
@@ -32,19 +42,38 @@
   },
   "contributes": {
     "commands": [
-      {"command": "zedPackageInsights.refresh", "title": "Zed: Refresh Package Insights"},
-      {"command": "zedPackageInsights.show", "title": "Zed: Show Package Insights"},
-      {"command": "zedPackageInsights.actions", "title": "Zed: Recommended Actions"},
-      {"command": "zedPackageInsights.openSettings", "title": "Preferences: Zed Package Insights Settings"}
+      {
+        "command": "zedPackageInsights.refresh",
+        "title": "Zed: Refresh Package Insights"
+      },
+      {
+        "command": "zedPackageInsights.show",
+        "title": "Zed: Show Package Insights"
+      },
+      {
+        "command": "zedPackageInsights.actions",
+        "title": "Zed: Recommended Actions"
+      },
+      {
+        "command": "zedPackageInsights.openSettings",
+        "title": "Preferences: Zed Package Insights Settings"
+      }
     ],
     "viewsContainers": {
       "activitybar": [
-        {"id": "zedPackageInsights", "title": "Zed Packages", "icon": "resources/zed.svg"}
+        {
+          "id": "zedPackageInsights",
+          "title": "Zed Packages",
+          "icon": "resources/zed.svg"
+        }
       ]
     },
     "views": {
       "zedPackageInsights": [
-        {"id": "zedPackageInsights.packages", "name": "Package Insights"}
+        {
+          "id": "zedPackageInsights.packages",
+          "name": "Package Insights"
+        }
       ]
     },
     "configuration": {
@@ -76,5 +105,13 @@
         }
       }
     }
+  },
+  "oresLint": {
+    "note": "Declared, not installed. ores-lint resolves these from a global install - see .ores-lint/README.md",
+    "requires": {
+      "eslint": ">=9",
+      "typescript-eslint": ">=8 (optional; without it .ts files are skipped)"
+    },
+    "install": "npm i -g eslint typescript-eslint"
   }
 }
