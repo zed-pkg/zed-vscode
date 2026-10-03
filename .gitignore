@@ -6,3 +6,8 @@ tmp/worktrees/
 # Local temporary directories and Git worktrees (DEN-3956).
 tmp/
 temp/
+# Repository-local temporary data and authorized Git worktrees
+temp/worktrees
+
+# machine-local symlink to ORESoftware/my-ai AGENTS.md; never committed
+.ores/
