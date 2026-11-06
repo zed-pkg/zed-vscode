@@ -191,3 +191,46 @@ test('native AttoLang adoption is read-only and zed init requires confirmation',
     await fsp.rm(root, {recursive: true, force: true});
   }
 });
+
+test('does not adopt a forged directory as an AttoLang project marker', async () => {
+  const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'zed-vscode-atto-marker-dir-'));
+  const project = path.join(base, 'non-project');
+  try {
+    await fsp.mkdir(path.join(project, '.ores.pkg.toml'), {recursive: true});
+    assert.deepEqual(await discoverPackageRoots([base]), []);
+    const report = fallbackReport(project);
+    const issue = report.issues.find((value) => value.id === 'ZED001');
+    assert.ok(issue);
+    assert.equal(issue.severity, 'info');
+    assert.deepEqual(issue.files, []);
+    assert.equal(issue.actions[0].requiresConfirmation, true);
+  } finally {
+    await fsp.rm(base, {recursive: true, force: true});
+  }
+});
+
+test('does not follow external AttoLang manifest symlinks during discovery', async (t) => {
+  // Windows runners do not universally grant symlink creation to user tests.
+  // The directory-spoofing regression above still runs on every platform.
+  if (process.platform === 'win32') {
+    t.skip('portable Windows symlink creation requires developer privileges');
+    return;
+  }
+  const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'zed-vscode-atto-marker-link-'));
+  const outside = await fsp.mkdtemp(path.join(os.tmpdir(), 'zed-vscode-atto-marker-outside-'));
+  try {
+    await fsp.writeFile(path.join(outside, '.ores.pkg.toml'), '# outside the workspace\n');
+    const project = path.join(base, 'project');
+    await fsp.mkdir(project, {recursive: true});
+    await fsp.symlink(path.join(outside, '.ores.pkg.toml'), path.join(project, '.ores.pkg.toml'));
+    assert.deepEqual(await discoverPackageRoots([base]), []);
+    const report = fallbackReport(project);
+    const issue = report.issues.find((value) => value.id === 'ZED001');
+    assert.ok(issue);
+    assert.equal(issue.severity, 'info');
+    assert.deepEqual(issue.files, []);
+  } finally {
+    await fsp.rm(base, {recursive: true, force: true});
+    await fsp.rm(outside, {recursive: true, force: true});
+  }
+});
