@@ -240,6 +240,8 @@ function fallbackReport(root, cliFailure = '') {
   const lock = path.join(absoluteRoot, '.zpkg.lock');
   const staging = path.join(absoluteRoot, '.zpkg-staging');
   const modules = path.join(absoluteRoot, 'zed_modules');
+  const attoManifest = path.join(absoluteRoot, '.ores.pkg.toml');
+  const hasAttoLangProject = fs.existsSync(attoManifest);
   const hasManifest = fs.existsSync(manifest);
   const hasLock = fs.existsSync(lock);
   const issues = [];
@@ -251,7 +253,16 @@ function fallbackReport(root, cliFailure = '') {
   });
 
   if (!hasManifest && !hasLock) {
-    issues.push({id: 'ZED001', severity: 'info', title: 'Folder is not a Zed package', detail: 'No .zpkg.toml or .zpkg.lock was found.', files: [], actions: [commandAction('zed.init', 'Initialize package', ['init'], {requiresNetwork: false})]});
+    issues.push({
+      id: 'ZED001',
+      severity: hasAttoLangProject ? 'warning' : 'info',
+      title: hasAttoLangProject ? 'AttoLang project needs a Zed package manifest' : 'Folder is not a Zed package',
+      detail: hasAttoLangProject
+        ? 'Found .ores.pkg.toml but no .zpkg.toml or .zpkg.lock. Initialize Zed to manage AttoLang dependencies; the native manifest remains authoritative for compiler imports.'
+        : 'No .zpkg.toml or .zpkg.lock was found.',
+      files: hasAttoLangProject ? [attoManifest] : [],
+      actions: [commandAction('zed.init', 'Initialize package', ['init'], {requiresNetwork: false})],
+    });
   } else if (!hasManifest && hasLock) {
     issues.push({id: 'ZED002', severity: 'warning', title: 'Lockfile exists without a manifest', detail: 'Restore the frozen package state without generating a manifest.', files: [lock], actions: [commandAction('zed.restoreFrozen', 'Restore frozen state', ['install', '--frozen', '--do-not-write-new-manifest'])]});
   } else if (hasManifest && !hasLock) {
@@ -317,7 +328,9 @@ async function discoverPackageRoots(folders, options = {}) {
     let entries;
     try { entries = await fsp.readdir(absolute, {withFileTypes: true}); } catch { return; }
     const names = new Set(entries.map((entry) => entry.name));
-    if (names.has('.zpkg.toml') || names.has('.zpkg.lock')) roots.push(absolute);
+    // A native AttoLang project can adopt Zed before creating its Zed manifest.
+    // Discovery is read-only and does not imply a verified dependency graph.
+    if (names.has('.zpkg.toml') || names.has('.zpkg.lock') || names.has('.ores.pkg.toml')) roots.push(absolute);
     if (depth >= maxDepth) return;
     for (const entry of entries) {
       if (!entry.isDirectory() || IGNORED_DIRECTORIES.has(entry.name)) continue;
