@@ -7,8 +7,9 @@ const { spawn } = require('node:child_process');
 
 const SCHEMA_VERSION = 1;
 const INSPECT_SCHEMA_MAJOR = 1;
-// Bound the read-only CLI protocol, including stderr, before building JSON strings.
-const MAX_INSPECT_OUTPUT_BYTES = 4 * 1024 * 1024;
+// Bound read-only inspection and confirmation-gated actions before
+// accumulating protocol or process logs into JavaScript strings.
+const MAX_ZED_PROCESS_OUTPUT_BYTES = 4 * 1024 * 1024;
 const IGNORED_DIRECTORIES = new Set([
   '.git', '.hg', '.svn', '.idea', '.vscode', 'node_modules', 'zed_modules',
   'target', 'build', 'dist', '.dart_tool', '.gradle', '.vendor'
@@ -180,11 +181,11 @@ function runProcess(executable, args, cwd, timeoutMs, env = process.env) {
     const appendBounded = (channel, chunk) => {
       if (settled) return;
       outputBytes += Buffer.byteLength(chunk, 'utf8');
-      if (outputBytes > MAX_INSPECT_OUTPUT_BYTES) {
+      if (outputBytes > MAX_ZED_PROCESS_OUTPUT_BYTES) {
         settled = true;
         clearTimeout(timer);
         child.kill('SIGKILL');
-        const error = new Error('Zed inspect output exceeded its permitted byte limit.');
+        const error = new Error('Zed command output exceeded its permitted byte limit.');
         error.code = 'EOUTPUTLIMIT';
         reject(error);
         return;
