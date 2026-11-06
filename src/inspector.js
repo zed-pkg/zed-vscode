@@ -241,7 +241,15 @@ function fallbackReport(root, cliFailure = '') {
   const staging = path.join(absoluteRoot, '.zpkg-staging');
   const modules = path.join(absoluteRoot, 'zed_modules');
   const attoManifest = path.join(absoluteRoot, '.ores.pkg.toml');
-  const hasAttoLangProject = fs.existsSync(attoManifest);
+  // A compiler project marker must be an actual file in this root. A
+  // symlink to an external manifest (or a directory with this name) must not
+  // cause read-only workspace discovery to claim native project ownership.
+  let hasAttoLangProject = false;
+  try {
+    hasAttoLangProject = fs.lstatSync(attoManifest).isFile();
+  } catch {
+    // A missing or inaccessible marker does not prove an AttoLang project.
+  }
   const hasManifest = fs.existsSync(manifest);
   const hasLock = fs.existsSync(lock);
   const issues = [];
@@ -329,8 +337,12 @@ async function discoverPackageRoots(folders, options = {}) {
     try { entries = await fsp.readdir(absolute, {withFileTypes: true}); } catch { return; }
     const names = new Set(entries.map((entry) => entry.name));
     // A native AttoLang project can adopt Zed before creating its Zed manifest.
+    // Only a local regular file counts: Dirent.isFile() rejects forged
+    // directories and external symlink markers without reading their targets.
     // Discovery is read-only and does not imply a verified dependency graph.
-    if (names.has('.zpkg.toml') || names.has('.zpkg.lock') || names.has('.ores.pkg.toml')) roots.push(absolute);
+    const nativeMarker = entries.some((entry) =>
+      entry.name === '.ores.pkg.toml' && entry.isFile());
+    if (names.has('.zpkg.toml') || names.has('.zpkg.lock') || nativeMarker) roots.push(absolute);
     if (depth >= maxDepth) return;
     for (const entry of entries) {
       if (!entry.isDirectory() || IGNORED_DIRECTORIES.has(entry.name)) continue;
