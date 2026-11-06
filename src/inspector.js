@@ -113,7 +113,15 @@ function validateReport(report, root) {
   try {
     const issues = (Array.isArray(report.diagnostics) ? report.diagnostics : []).map((diagnostic) => {
       const locationPath = diagnostic?.location?.path ? String(diagnostic.location.path) : '';
-      const files = locationPath ? [locationPath] : [];
+      // Diagnostic locations are CLI-supplied data. Never make the editor
+      // publish Problems for arbitrary files outside the inspected workspace.
+      // Resolve relative paths against the report root, not the extension's
+      // process cwd; canonicalize existing symlinks before admission.
+      const absoluteLocation = locationPath ? path.resolve(reportRoot, locationPath) : '';
+      if (absoluteLocation && !pathWithin(reportRoot, absoluteLocation)) {
+        throw new Error('Rejected Zed diagnostic location outside the workspace.');
+      }
+      const files = absoluteLocation ? [absoluteLocation] : [];
       return {
         id: String(diagnostic?.code || 'inspect.issue.unknown'),
         severity: String(diagnostic?.severity || 'warning').toLowerCase(),
