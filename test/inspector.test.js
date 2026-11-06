@@ -12,6 +12,7 @@ const {
   validateReport,
   fallbackReport,
   discoverPackageRoots,
+  runProcess,
 } = require('../src/inspector');
 
 function safeCliReport(root, diagnostics = []) {
@@ -190,4 +191,27 @@ test('native AttoLang adoption is read-only and zed init requires confirmation',
   } finally {
     await fsp.rm(root, {recursive: true, force: true});
   }
+});
+
+test('inspection subprocess bounds stdout, stderr, and their combined size', {timeout: 25000}, async () => {
+  const cwd = process.cwd();
+  const run = (script) => runProcess(process.execPath, ['-e', script], cwd, 15000);
+  const ordinary = await run('process.stdout.write("ok"); process.stderr.write("warning");');
+  assert.equal(ordinary.code, 0);
+  assert.equal(ordinary.stdout, 'ok');
+  assert.equal(ordinary.stderr, 'warning');
+
+  for (const channel of ['stdout', 'stderr']) {
+    await assert.rejects(
+      run(`process.${channel}.write("x".repeat(5 * 1024 * 1024));`),
+      (error) => error.code === 'EOUTPUTLIMIT' && !error.message.includes('xxxxx'),
+      `unbounded ${channel} must fail closed`,
+    );
+  }
+
+  await assert.rejects(
+    run('process.stdout.write("x".repeat(3 * 1024 * 1024)); process.stderr.write("y".repeat(3 * 1024 * 1024));'),
+    (error) => error.code === 'EOUTPUTLIMIT',
+    'both output streams share a single memory budget',
+  );
 });
