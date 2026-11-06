@@ -7,6 +7,9 @@ const { spawn } = require('node:child_process');
 
 const SCHEMA_VERSION = 1;
 const INSPECT_SCHEMA_MAJOR = 1;
+// Bound read-only inspection and confirmation-gated actions before
+// accumulating protocol or process logs into JavaScript strings.
+const MAX_ZED_PROCESS_OUTPUT_BYTES = 4 * 1024 * 1024;
 const IGNORED_DIRECTORIES = new Set([
   '.git', '.hg', '.svn', '.idea', '.vscode', 'node_modules', 'zed_modules',
   'target', 'build', 'dist', '.dart_tool', '.gradle', '.vendor'
@@ -165,6 +168,7 @@ function runProcess(executable, args, cwd, timeoutMs, env = process.env) {
     });
     let stdout = '';
     let stderr = '';
+    let outputBytes = 0;
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
@@ -174,10 +178,25 @@ function runProcess(executable, args, cwd, timeoutMs, env = process.env) {
       error.code = 'ETIMEDOUT';
       reject(error);
     }, timeoutMs);
+    const appendBounded = (channel, chunk) => {
+      if (settled) return;
+      outputBytes += Buffer.byteLength(chunk, 'utf8');
+      if (outputBytes > MAX_ZED_PROCESS_OUTPUT_BYTES) {
+        settled = true;
+        clearTimeout(timer);
+        child.kill('SIGKILL');
+        const error = new Error('Zed command output exceeded its permitted byte limit.');
+        error.code = 'EOUTPUTLIMIT';
+        reject(error);
+        return;
+      }
+      if (channel === 'stdout') stdout += chunk;
+      else stderr += chunk;
+    };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stdout.on('data', (chunk) => appendBounded('stdout', chunk));
+    child.stderr.on('data', (chunk) => appendBounded('stderr', chunk));
     child.on('error', (error) => {
       if (settled) return;
       settled = true;
