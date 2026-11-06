@@ -7,6 +7,10 @@ const { spawn } = require('node:child_process');
 
 const SCHEMA_VERSION = 1;
 const INSPECT_SCHEMA_MAJOR = 1;
+// The CLI is an external process reading a potentially adversarial workspace.
+// Bound stderr and stdout together to avoid extension-host memory exhaustion
+// before JSON parsing, even when the process has not reached its time limit.
+const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
 const IGNORED_DIRECTORIES = new Set([
   '.git', '.hg', '.svn', '.idea', '.vscode', 'node_modules', 'zed_modules',
   'target', 'build', 'dist', '.dart_tool', '.gradle', '.vendor'
@@ -165,6 +169,7 @@ function runProcess(executable, args, cwd, timeoutMs, env = process.env) {
     });
     let stdout = '';
     let stderr = '';
+    let outputBytes = 0;
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
@@ -174,10 +179,26 @@ function runProcess(executable, args, cwd, timeoutMs, env = process.env) {
       error.code = 'ETIMEDOUT';
       reject(error);
     }, timeoutMs);
+    const capture = (channel, chunk) => {
+      if (settled) return;
+      const bytes = Buffer.byteLength(chunk, 'utf8');
+      if (bytes > MAX_PROCESS_OUTPUT_BYTES - outputBytes) {
+        settled = true;
+        clearTimeout(timer);
+        child.kill('SIGKILL');
+        const error = new Error('Zed command exceeded the 1 MiB combined output limit.');
+        error.code = 'EOUTPUTLIMIT';
+        reject(error);
+        return;
+      }
+      outputBytes += bytes;
+      if (channel === 'stdout') stdout += chunk;
+      else stderr += chunk;
+    };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stdout.on('data', (chunk) => capture('stdout', chunk));
+    child.stderr.on('data', (chunk) => capture('stderr', chunk));
     child.on('error', (error) => {
       if (settled) return;
       settled = true;
