@@ -195,7 +195,7 @@ function activate(context) {
     vscode.commands.registerCommand('zedPackageInsights.actions', () => runRecommendedAction(provider, diagnostics, output)),
     vscode.commands.registerCommand('zedPackageInsights.openSettings', () => vscode.commands.executeCommand('workbench.action.openSettings', '@ext:zed-pkg.zed-package-insights')),
   );
-  const watcher = vscode.workspace.createFileSystemWatcher('**/{.zpkg.toml,.zpkg.lock,.zpkg-staging/**}');
+  const watcher = vscode.workspace.createFileSystemWatcher('**/{.zpkg.toml,.zpkg.lock,.ores.pkg.toml,.zpkg-staging/**}');
   const schedule = () => { if (config().autoRefresh) void refresh(provider, diagnostics, output, false); };
   watcher.onDidCreate(schedule, null, context.subscriptions);
   watcher.onDidChange(schedule, null, context.subscriptions);

@@ -4,7 +4,8 @@ Native VS Code integration for Zed Package Manager diagnostics and confirmation-
 
 Implemented surface:
 
-- multi-root package discovery across all workspace folders;
+- multi-root package discovery across all workspace folders, including native AttoLang
+  projects containing `.ores.pkg.toml` even before Zed is initialized;
 - versioned `zed inspect --workspace <root> --json` adapter with deterministic read-only fallback;
 - Problems diagnostics, Activity Bar package tree, output channel, refresh/show/action commands;
 - exact executable, argv, and cwd preview before mutation;
@@ -23,5 +24,11 @@ npm run verify
 xvfb-run -a npm run test:extension
 npm run package
 ```
+
+Native AttoLang discovery is read-only. In a project that has only
+`.ores.pkg.toml`, the fallback report suggests `zed init` through the existing
+explicit confirmation gate; it does not modify the native manifest, run the
+AttoLang compiler, or claim that the pending `zed attolang paths` bridge is
+available. See [the Zed-first AttoLang RFC](https://github.com/zed-pkg/zed-docs/pull/95).
 
 The dedicated repository and clean Extension Host gate are established. Remaining distribution gates are adoption of the final shared `zed inspect` schema and Marketplace signing/publication with final artifact provenance.

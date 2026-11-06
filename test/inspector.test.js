@@ -145,3 +145,49 @@ test('fallback reports staging recovery without mutating the workspace', async (
   assert.equal(path.resolve(recovery.workingDirectory), path.resolve(root));
   await fsp.rm(root, {recursive: true, force: true});
 });
+
+test('discovers native AttoLang project roots without requiring a Zed manifest', async () => {
+  const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'zed-vscode-atto-roots-'));
+  try {
+    const project = path.join(base, 'atto-project');
+    const ignored = path.join(project, 'zed_modules', 'org', 'dependency');
+    await fsp.mkdir(ignored, {recursive: true});
+    await fsp.writeFile(path.join(project, '.ores.pkg.toml'), '# native AttoLang project marker\n');
+    await fsp.writeFile(path.join(ignored, '.ores.pkg.toml'), '# installed dependency\n');
+
+    const roots = await discoverPackageRoots([base]);
+    assert.deepEqual(roots, [path.resolve(project)]);
+  } finally {
+    await fsp.rm(base, {recursive: true, force: true});
+  }
+});
+
+test('native AttoLang adoption is read-only and zed init requires confirmation', async () => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'zed-vscode-atto-adopt-'));
+  const nativeManifest = path.join(root, '.ores.pkg.toml');
+  try {
+    await fsp.writeFile(nativeManifest, '# original native project\n');
+    const before = await fsp.readFile(nativeManifest, 'utf8');
+    const report = fallbackReport(root);
+    const issue = report.issues.find((value) => value.id === 'ZED001');
+    assert.ok(issue);
+    assert.equal(issue.severity, 'warning');
+    assert.match(issue.title, /AttoLang/);
+    assert.deepEqual(issue.files, [nativeManifest]);
+    assert.match(issue.detail, /\.zpkg\.toml/);
+    const action = issue.actions[0];
+    assert.deepEqual(action.arguments, ['init']);
+    assert.equal(action.requiresConfirmation, true);
+    assert.equal(action.mutatesProject, true);
+    assert.equal(action.requiresNetwork, false);
+    assert.equal(action.executesPackageCode, false);
+    assert.equal(await fsp.readFile(nativeManifest, 'utf8'), before);
+    assert.equal(fs.existsSync(path.join(root, '.zpkg.toml')), false);
+
+    await fsp.writeFile(path.join(root, '.zpkg.toml'), '[package]\n');
+    await fsp.writeFile(path.join(root, '.zpkg.lock'), 'version = 1\n');
+    assert.equal(fallbackReport(root).issues.some((value) => value.id === 'ZED001'), false);
+  } finally {
+    await fsp.rm(root, {recursive: true, force: true});
+  }
+});
