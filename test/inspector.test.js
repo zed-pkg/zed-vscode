@@ -226,3 +226,27 @@ test('CLI process output remains bounded across stdout and stderr', async () => 
     {code: 'EOUTPUTLIMIT'}
   );
 });
+
+test('untrusted inspect diagnostic locations cannot escape the workspace', () => {
+  const root = path.resolve('/workspace');
+  for (const location of [
+    path.resolve(root, '..', 'outside-diagnostic.txt'),
+    '../outside-diagnostic.txt',
+  ]) {
+    const report = validateReport(safeCliReport(root, [{
+      code: 'ESCAPE', severity: 'warning', message: 'File outside project',
+      location: {path: location}, actions: [],
+    }]), root);
+    assert.equal(report.source, 'fallback');
+    assert.equal(report.issues[0].id, 'inspect.action.unsafe');
+    assert.deepEqual(report.issues[0].files, []);
+    assert.match(report.issues[0].detail, /outside the workspace/);
+  }
+
+  const safe = validateReport(safeCliReport(root, [{
+    code: 'INSIDE', severity: 'info', message: 'Missing lock',
+    location: {path: '.zpkg.lock'}, actions: [],
+  }]), root);
+  assert.equal(safe.source, 'cli');
+  assert.deepEqual(safe.issues[0].files, [path.join(root, '.zpkg.lock')]);
+});
