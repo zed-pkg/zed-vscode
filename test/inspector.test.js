@@ -11,6 +11,7 @@ const {
   inspectArgs,
   validateReport,
   fallbackReport,
+  runProcess,
   discoverPackageRoots,
 } = require('../src/inspector');
 
@@ -190,4 +191,62 @@ test('native AttoLang adoption is read-only and zed init requires confirmation',
   } finally {
     await fsp.rm(root, {recursive: true, force: true});
   }
+});
+
+test('CLI process output remains bounded across stdout and stderr', async () => {
+  const cwd = os.tmpdir();
+  const small = await runProcess(
+    process.execPath,
+    ['-e', 'process.stdout.write("ok"); process.stderr.write("warn");'],
+    cwd,
+    5000
+  );
+  assert.equal(small.code, 0);
+  assert.equal(small.stdout, 'ok');
+  assert.equal(small.stderr, 'warn');
+
+  // Neither stream is individually over 1 MiB. The combined stream MUST
+  // still fail closed so stderr cannot bypass a stdout-only budget.
+  await assert.rejects(
+    runProcess(
+      process.execPath,
+      ['-e', 'process.stdout.write("x".repeat(600000)); process.stderr.write("y".repeat(600000));'],
+      cwd,
+      5000
+    ),
+    {code: 'EOUTPUTLIMIT'}
+  );
+  await assert.rejects(
+    runProcess(
+      process.execPath,
+      ['-e', 'process.stderr.write("z".repeat(2 * 1024 * 1024));'],
+      cwd,
+      5000
+    ),
+    {code: 'EOUTPUTLIMIT'}
+  );
+});
+
+test('untrusted inspect diagnostic locations cannot escape the workspace', () => {
+  const root = path.resolve('/workspace');
+  for (const location of [
+    path.resolve(root, '..', 'outside-diagnostic.txt'),
+    '../outside-diagnostic.txt',
+  ]) {
+    const report = validateReport(safeCliReport(root, [{
+      code: 'ESCAPE', severity: 'warning', message: 'File outside project',
+      location: {path: location}, actions: [],
+    }]), root);
+    assert.equal(report.source, 'fallback');
+    assert.equal(report.issues[0].id, 'inspect.action.unsafe');
+    assert.deepEqual(report.issues[0].files, []);
+    assert.match(report.issues[0].detail, /outside the workspace/);
+  }
+
+  const safe = validateReport(safeCliReport(root, [{
+    code: 'INSIDE', severity: 'info', message: 'Missing lock',
+    location: {path: '.zpkg.lock'}, actions: [],
+  }]), root);
+  assert.equal(safe.source, 'cli');
+  assert.deepEqual(safe.issues[0].files, [path.join(root, '.zpkg.lock')]);
 });
