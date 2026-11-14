@@ -213,9 +213,22 @@ async function inspectWithCli(root, options = {}) {
 
 function directoryHasEntries(directory) {
   try {
-    return fs.statSync(directory).isDirectory() && fs.readdirSync(directory).length > 0;
+    // Never interpret a symlinked journal outside this workspace as a local
+    // recoverable transaction. A fallback report is not an authority to walk
+    // arbitrary directory links.
+    return fs.lstatSync(directory).isDirectory() && fs.readdirSync(directory).length > 0;
   } catch {
     return false;
+  }
+}
+
+// Only an existing regular file is a valid root package marker. A directory
+// or symlink with the right name is not a Zed manifest or immutable lock.
+function packageMarkerState(file) {
+  try {
+    return fs.lstatSync(file).isFile() ? 'file' : 'invalid';
+  } catch (error) {
+    return error?.code === 'ENOENT' ? 'missing' : 'invalid';
   }
 }
 
@@ -241,9 +254,20 @@ function fallbackReport(root, cliFailure = '') {
   const staging = path.join(absoluteRoot, '.zpkg-staging');
   const modules = path.join(absoluteRoot, 'zed_modules');
   const attoManifest = path.join(absoluteRoot, '.ores.pkg.toml');
-  const hasAttoLangProject = fs.existsSync(attoManifest);
-  const hasManifest = fs.existsSync(manifest);
-  const hasLock = fs.existsSync(lock);
+  // A compiler project marker must be an actual file in this root. A
+  // symlink to an external manifest (or a directory with this name) must not
+  // cause read-only workspace discovery to claim native project ownership.
+  let hasAttoLangProject = false;
+  try {
+    hasAttoLangProject = fs.lstatSync(attoManifest).isFile();
+  } catch {
+    // A missing or inaccessible marker does not prove an AttoLang project.
+  }
+  const manifestState = packageMarkerState(manifest);
+  const lockState = packageMarkerState(lock);
+  const hasManifest = manifestState === 'file';
+  const hasLock = lockState === 'file';
+  const unsafeMarkers = [manifestState === 'invalid' && manifest, lockState === 'invalid' && lock].filter(Boolean);
   const issues = [];
 
   const commandAction = (id, title, args, {requiresNetwork = true, executesPackageCode = args[0] === 'install'} = {}) => ({
@@ -252,7 +276,15 @@ function fallbackReport(root, cliFailure = '') {
     mutatesProject: true, requiresNetwork, executesPackageCode,
   });
 
-  if (!hasManifest && !hasLock) {
+  if (unsafeMarkers.length) {
+    issues.push({
+      id: 'ZED016', severity: 'error',
+      title: 'Unsafe package marker is not a local regular file',
+      detail: 'The Zed manifest or lockfile is a symlink, directory, or inaccessible entry; inspect it manually before installing or recovering packages.',
+      files: unsafeMarkers,
+      actions: [],
+    });
+  } else if (!hasManifest && !hasLock) {
     issues.push({
       id: 'ZED001',
       severity: hasAttoLangProject ? 'warning' : 'info',
@@ -271,7 +303,18 @@ function fallbackReport(root, cliFailure = '') {
 
   if (hasManifest) {
     let manifestText = '';
-    try { manifestText = fs.readFileSync(manifest, 'utf8'); } catch (error) {
+    try {
+      // O_NOFOLLOW blocks a marker swapped to a symlink between lstat and
+      // open on platforms that provide it. Confirm the opened descriptor is
+      // still a regular file, not merely its previous pathname.
+      const descriptor = fs.openSync(manifest, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+      try {
+        if (!fs.fstatSync(descriptor).isFile()) throw new Error('Manifest is not a regular file');
+        manifestText = fs.readFileSync(descriptor, 'utf8');
+      } finally {
+        fs.closeSync(descriptor);
+      }
+    } catch (error) {
       issues.push({id: 'ZED013', severity: 'error', title: 'Manifest could not be read', detail: redact(error.message), files: [manifest], actions: []});
     }
     if (manifestText && !basicTomlLooksValid(manifestText)) {
@@ -284,7 +327,7 @@ function fallbackReport(root, cliFailure = '') {
 
   if (hasManifest && hasLock) {
     try {
-      if (fs.statSync(manifest).mtimeMs > fs.statSync(lock).mtimeMs + 1) {
+      if (fs.lstatSync(manifest).mtimeMs > fs.lstatSync(lock).mtimeMs + 1) {
         issues.push({id: 'ZED004', severity: 'warning', title: 'Manifest is newer than the lockfile', detail: 'The lockfile may not reflect the current manifest.', files: [manifest, lock], actions: [commandAction('zed.install', 'Refresh lockfile', ['install'])]});
       }
     } catch (error) {
@@ -292,7 +335,7 @@ function fallbackReport(root, cliFailure = '') {
     }
   }
 
-  if (directoryHasEntries(staging)) {
+  if (!unsafeMarkers.length && directoryHasEntries(staging)) {
     const args = ['install'];
     if (hasLock) args.push('--frozen');
     if (hasLock && !hasManifest) args.push('--do-not-write-new-manifest');
@@ -327,10 +370,15 @@ async function discoverPackageRoots(folders, options = {}) {
     seen.add(absolute);
     let entries;
     try { entries = await fsp.readdir(absolute, {withFileTypes: true}); } catch { return; }
-    const names = new Set(entries.map((entry) => entry.name));
     // A native AttoLang project can adopt Zed before creating its Zed manifest.
+    // Only a local regular file counts: Dirent.isFile() rejects forged
+    // directories and external symlink markers without reading their targets.
     // Discovery is read-only and does not imply a verified dependency graph.
-    if (names.has('.zpkg.toml') || names.has('.zpkg.lock') || names.has('.ores.pkg.toml')) roots.push(absolute);
+    const nativeMarker = entries.some((entry) =>
+      entry.name === '.ores.pkg.toml' && entry.isFile());
+    const zedMarker = entries.some((entry) =>
+      (entry.name === '.zpkg.toml' || entry.name === '.zpkg.lock') && entry.isFile());
+    if (zedMarker || nativeMarker) roots.push(absolute);
     if (depth >= maxDepth) return;
     for (const entry of entries) {
       if (!entry.isDirectory() || IGNORED_DIRECTORIES.has(entry.name)) continue;
