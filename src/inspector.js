@@ -7,6 +7,10 @@ const { spawn } = require('node:child_process');
 
 const SCHEMA_VERSION = 1;
 const INSPECT_SCHEMA_MAJOR = 1;
+// The CLI is an external process reading a potentially adversarial workspace.
+// Bound stderr and stdout together to avoid extension-host memory exhaustion
+// before JSON parsing, even when the process has not reached its time limit.
+const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
 const IGNORED_DIRECTORIES = new Set([
   '.git', '.hg', '.svn', '.idea', '.vscode', 'node_modules', 'zed_modules',
   'target', 'build', 'dist', '.dart_tool', '.gradle', '.vendor'
@@ -109,7 +113,15 @@ function validateReport(report, root) {
   try {
     const issues = (Array.isArray(report.diagnostics) ? report.diagnostics : []).map((diagnostic) => {
       const locationPath = diagnostic?.location?.path ? String(diagnostic.location.path) : '';
-      const files = locationPath ? [locationPath] : [];
+      // Diagnostic locations are CLI-supplied data. Never make the editor
+      // publish Problems for arbitrary files outside the inspected workspace.
+      // Resolve relative paths against the report root, not the extension's
+      // process cwd; canonicalize existing symlinks before admission.
+      const absoluteLocation = locationPath ? path.resolve(reportRoot, locationPath) : '';
+      if (absoluteLocation && !pathWithin(reportRoot, absoluteLocation)) {
+        throw new Error('Rejected Zed diagnostic location outside the workspace.');
+      }
+      const files = absoluteLocation ? [absoluteLocation] : [];
       return {
         id: String(diagnostic?.code || 'inspect.issue.unknown'),
         severity: String(diagnostic?.severity || 'warning').toLowerCase(),
@@ -165,6 +177,7 @@ function runProcess(executable, args, cwd, timeoutMs, env = process.env) {
     });
     let stdout = '';
     let stderr = '';
+    let outputBytes = 0;
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
@@ -174,10 +187,26 @@ function runProcess(executable, args, cwd, timeoutMs, env = process.env) {
       error.code = 'ETIMEDOUT';
       reject(error);
     }, timeoutMs);
+    const capture = (channel, chunk) => {
+      if (settled) return;
+      const bytes = Buffer.byteLength(chunk, 'utf8');
+      if (bytes > MAX_PROCESS_OUTPUT_BYTES - outputBytes) {
+        settled = true;
+        clearTimeout(timer);
+        child.kill('SIGKILL');
+        const error = new Error('Zed command exceeded the 1 MiB combined output limit.');
+        error.code = 'EOUTPUTLIMIT';
+        reject(error);
+        return;
+      }
+      outputBytes += bytes;
+      if (channel === 'stdout') stdout += chunk;
+      else stderr += chunk;
+    };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stdout.on('data', (chunk) => capture('stdout', chunk));
+    child.stderr.on('data', (chunk) => capture('stderr', chunk));
     child.on('error', (error) => {
       if (settled) return;
       settled = true;
@@ -240,6 +269,8 @@ function fallbackReport(root, cliFailure = '') {
   const lock = path.join(absoluteRoot, '.zpkg.lock');
   const staging = path.join(absoluteRoot, '.zpkg-staging');
   const modules = path.join(absoluteRoot, 'zed_modules');
+  const attoManifest = path.join(absoluteRoot, '.ores.pkg.toml');
+  const hasAttoLangProject = fs.existsSync(attoManifest);
   const hasManifest = fs.existsSync(manifest);
   const hasLock = fs.existsSync(lock);
   const issues = [];
@@ -251,7 +282,16 @@ function fallbackReport(root, cliFailure = '') {
   });
 
   if (!hasManifest && !hasLock) {
-    issues.push({id: 'ZED001', severity: 'info', title: 'Folder is not a Zed package', detail: 'No .zpkg.toml or .zpkg.lock was found.', files: [], actions: [commandAction('zed.init', 'Initialize package', ['init'], {requiresNetwork: false})]});
+    issues.push({
+      id: 'ZED001',
+      severity: hasAttoLangProject ? 'warning' : 'info',
+      title: hasAttoLangProject ? 'AttoLang project needs a Zed package manifest' : 'Folder is not a Zed package',
+      detail: hasAttoLangProject
+        ? 'Found .ores.pkg.toml but no .zpkg.toml or .zpkg.lock. Initialize Zed to manage AttoLang dependencies; the native manifest remains authoritative for compiler imports.'
+        : 'No .zpkg.toml or .zpkg.lock was found.',
+      files: hasAttoLangProject ? [attoManifest] : [],
+      actions: [commandAction('zed.init', 'Initialize package', ['init'], {requiresNetwork: false})],
+    });
   } else if (!hasManifest && hasLock) {
     issues.push({id: 'ZED002', severity: 'warning', title: 'Lockfile exists without a manifest', detail: 'Restore the frozen package state without generating a manifest.', files: [lock], actions: [commandAction('zed.restoreFrozen', 'Restore frozen state', ['install', '--frozen', '--do-not-write-new-manifest'])]});
   } else if (hasManifest && !hasLock) {
@@ -317,7 +357,9 @@ async function discoverPackageRoots(folders, options = {}) {
     let entries;
     try { entries = await fsp.readdir(absolute, {withFileTypes: true}); } catch { return; }
     const names = new Set(entries.map((entry) => entry.name));
-    if (names.has('.zpkg.toml') || names.has('.zpkg.lock')) roots.push(absolute);
+    // A native AttoLang project can adopt Zed before creating its Zed manifest.
+    // Discovery is read-only and does not imply a verified dependency graph.
+    if (names.has('.zpkg.toml') || names.has('.zpkg.lock') || names.has('.ores.pkg.toml')) roots.push(absolute);
     if (depth >= maxDepth) return;
     for (const entry of entries) {
       if (!entry.isDirectory() || IGNORED_DIRECTORIES.has(entry.name)) continue;

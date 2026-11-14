@@ -11,6 +11,7 @@ const {
   inspectArgs,
   validateReport,
   fallbackReport,
+  runProcess,
   discoverPackageRoots,
 } = require('../src/inspector');
 
@@ -144,4 +145,108 @@ test('fallback reports staging recovery without mutating the workspace', async (
   assert.equal(recovery.executesPackageCode, true);
   assert.equal(path.resolve(recovery.workingDirectory), path.resolve(root));
   await fsp.rm(root, {recursive: true, force: true});
+});
+
+test('discovers native AttoLang project roots without requiring a Zed manifest', async () => {
+  const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'zed-vscode-atto-roots-'));
+  try {
+    const project = path.join(base, 'atto-project');
+    const ignored = path.join(project, 'zed_modules', 'org', 'dependency');
+    await fsp.mkdir(ignored, {recursive: true});
+    await fsp.writeFile(path.join(project, '.ores.pkg.toml'), '# native AttoLang project marker\n');
+    await fsp.writeFile(path.join(ignored, '.ores.pkg.toml'), '# installed dependency\n');
+
+    const roots = await discoverPackageRoots([base]);
+    assert.deepEqual(roots, [path.resolve(project)]);
+  } finally {
+    await fsp.rm(base, {recursive: true, force: true});
+  }
+});
+
+test('native AttoLang adoption is read-only and zed init requires confirmation', async () => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'zed-vscode-atto-adopt-'));
+  const nativeManifest = path.join(root, '.ores.pkg.toml');
+  try {
+    await fsp.writeFile(nativeManifest, '# original native project\n');
+    const before = await fsp.readFile(nativeManifest, 'utf8');
+    const report = fallbackReport(root);
+    const issue = report.issues.find((value) => value.id === 'ZED001');
+    assert.ok(issue);
+    assert.equal(issue.severity, 'warning');
+    assert.match(issue.title, /AttoLang/);
+    assert.deepEqual(issue.files, [nativeManifest]);
+    assert.match(issue.detail, /\.zpkg\.toml/);
+    const action = issue.actions[0];
+    assert.deepEqual(action.arguments, ['init']);
+    assert.equal(action.requiresConfirmation, true);
+    assert.equal(action.mutatesProject, true);
+    assert.equal(action.requiresNetwork, false);
+    assert.equal(action.executesPackageCode, false);
+    assert.equal(await fsp.readFile(nativeManifest, 'utf8'), before);
+    assert.equal(fs.existsSync(path.join(root, '.zpkg.toml')), false);
+
+    await fsp.writeFile(path.join(root, '.zpkg.toml'), '[package]\n');
+    await fsp.writeFile(path.join(root, '.zpkg.lock'), 'version = 1\n');
+    assert.equal(fallbackReport(root).issues.some((value) => value.id === 'ZED001'), false);
+  } finally {
+    await fsp.rm(root, {recursive: true, force: true});
+  }
+});
+
+test('CLI process output remains bounded across stdout and stderr', async () => {
+  const cwd = os.tmpdir();
+  const small = await runProcess(
+    process.execPath,
+    ['-e', 'process.stdout.write("ok"); process.stderr.write("warn");'],
+    cwd,
+    5000
+  );
+  assert.equal(small.code, 0);
+  assert.equal(small.stdout, 'ok');
+  assert.equal(small.stderr, 'warn');
+
+  // Neither stream is individually over 1 MiB. The combined stream MUST
+  // still fail closed so stderr cannot bypass a stdout-only budget.
+  await assert.rejects(
+    runProcess(
+      process.execPath,
+      ['-e', 'process.stdout.write("x".repeat(600000)); process.stderr.write("y".repeat(600000));'],
+      cwd,
+      5000
+    ),
+    {code: 'EOUTPUTLIMIT'}
+  );
+  await assert.rejects(
+    runProcess(
+      process.execPath,
+      ['-e', 'process.stderr.write("z".repeat(2 * 1024 * 1024));'],
+      cwd,
+      5000
+    ),
+    {code: 'EOUTPUTLIMIT'}
+  );
+});
+
+test('untrusted inspect diagnostic locations cannot escape the workspace', () => {
+  const root = path.resolve('/workspace');
+  for (const location of [
+    path.resolve(root, '..', 'outside-diagnostic.txt'),
+    '../outside-diagnostic.txt',
+  ]) {
+    const report = validateReport(safeCliReport(root, [{
+      code: 'ESCAPE', severity: 'warning', message: 'File outside project',
+      location: {path: location}, actions: [],
+    }]), root);
+    assert.equal(report.source, 'fallback');
+    assert.equal(report.issues[0].id, 'inspect.action.unsafe');
+    assert.deepEqual(report.issues[0].files, []);
+    assert.match(report.issues[0].detail, /outside the workspace/);
+  }
+
+  const safe = validateReport(safeCliReport(root, [{
+    code: 'INSIDE', severity: 'info', message: 'Missing lock',
+    location: {path: '.zpkg.lock'}, actions: [],
+  }]), root);
+  assert.equal(safe.source, 'cli');
+  assert.deepEqual(safe.issues[0].files, [path.join(root, '.zpkg.lock')]);
 });
