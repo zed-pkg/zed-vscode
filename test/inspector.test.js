@@ -234,3 +234,57 @@ test('does not follow external AttoLang manifest symlinks during discovery', asy
     await fsp.rm(outside, {recursive: true, force: true});
   }
 });
+
+test('forged Zed manifest and lock directories are not package roots or install authority', async () => {
+  const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'zed-vscode-zpkg-dir-'));
+  const project = path.join(base, 'spoofed');
+  try {
+    await fsp.mkdir(path.join(project, '.zpkg.toml'), {recursive: true});
+    await fsp.mkdir(path.join(project, '.zpkg.lock'));
+    assert.deepEqual(await discoverPackageRoots([base]), []);
+    const report = fallbackReport(project);
+    const issue = report.issues.find((item) => item.id === 'ZED016');
+    assert.ok(issue);
+    assert.equal(issue.severity, 'error');
+    assert.deepEqual(issue.files.sort(), [
+      path.join(project, '.zpkg.lock'),
+      path.join(project, '.zpkg.toml'),
+    ]);
+    assert.deepEqual(issue.actions, []);
+    assert.equal(report.issues.some((item) => item.actions.some((action) => action.id === 'zed.init')), false);
+  } finally {
+    await fsp.rm(base, {recursive: true, force: true});
+  }
+});
+
+test('external package-marker and staging symlinks cannot authorize inspect actions', async (t) => {
+  if (process.platform === 'win32') {
+    t.skip('Windows symlink creation needs developer privileges');
+    return;
+  }
+  const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'zed-vscode-zpkg-link-'));
+  const outside = await fsp.mkdtemp(path.join(os.tmpdir(), 'zed-vscode-zpkg-outside-'));
+  const project = path.join(base, 'project');
+  try {
+    await fsp.mkdir(project);
+    await fsp.writeFile(path.join(outside, '.zpkg.toml'), '[package]\norg = "external"\n');
+    await fsp.writeFile(path.join(outside, '.zpkg.lock'), 'version = 1\n');
+    await fsp.mkdir(path.join(outside, 'staging'));
+    await fsp.writeFile(path.join(outside, 'staging', 'journal.json'), '{"token":"external"}');
+    await fsp.symlink(path.join(outside, '.zpkg.toml'), path.join(project, '.zpkg.toml'));
+    await fsp.symlink(path.join(outside, '.zpkg.lock'), path.join(project, '.zpkg.lock'));
+    await fsp.symlink(path.join(outside, 'staging'), path.join(project, '.zpkg-staging'));
+    assert.deepEqual(await discoverPackageRoots([base]), []);
+    const report = fallbackReport(project);
+    const issue = report.issues.find((item) => item.id === 'ZED016');
+    assert.ok(issue);
+    assert.equal(issue.severity, 'error');
+    assert.deepEqual(issue.actions, []);
+    assert.ok(!report.issues.some((item) => ['ZED004', 'ZED007', 'ZED014'].includes(item.id)));
+    assert.equal(JSON.stringify(report).includes('token'), false);
+    assert.equal(fs.readFileSync(path.join(outside, 'staging', 'journal.json'), 'utf8'), '{"token":"external"}');
+  } finally {
+    await fsp.rm(base, {recursive: true, force: true});
+    await fsp.rm(outside, {recursive: true, force: true});
+  }
+});
