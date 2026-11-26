@@ -26,7 +26,9 @@
   "activationEvents": [
     "onStartupFinished",
     "workspaceContains:**/.zpkg.toml",
-    "workspaceContains:**/.zpkg.lock"
+    "workspaceContains:**/.zpkg.lock",
+    "workspaceContains:**/.atto.pkg.toml",
+    "workspaceContains:**/.ores.pkg.toml"
   ],
   "scripts": {
     "test": "node --test test/*.test.js",

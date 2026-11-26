@@ -7,6 +7,10 @@ const { spawn } = require('node:child_process');
 
 const SCHEMA_VERSION = 1;
 const INSPECT_SCHEMA_MAJOR = 1;
+// The CLI is an external process reading a potentially adversarial workspace.
+// Bound stderr and stdout together to avoid extension-host memory exhaustion
+// before JSON parsing, even when the process has not reached its time limit.
+const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
 const IGNORED_DIRECTORIES = new Set([
   '.git', '.hg', '.svn', '.idea', '.vscode', 'node_modules', 'zed_modules',
   'target', 'build', 'dist', '.dart_tool', '.gradle', '.vendor'
@@ -109,7 +113,15 @@ function validateReport(report, root) {
   try {
     const issues = (Array.isArray(report.diagnostics) ? report.diagnostics : []).map((diagnostic) => {
       const locationPath = diagnostic?.location?.path ? String(diagnostic.location.path) : '';
-      const files = locationPath ? [locationPath] : [];
+      // Diagnostic locations are CLI-supplied data. Never make the editor
+      // publish Problems for arbitrary files outside the inspected workspace.
+      // Resolve relative paths against the report root, not the extension's
+      // process cwd; canonicalize existing symlinks before admission.
+      const absoluteLocation = locationPath ? path.resolve(reportRoot, locationPath) : '';
+      if (absoluteLocation && !pathWithin(reportRoot, absoluteLocation)) {
+        throw new Error('Rejected Zed diagnostic location outside the workspace.');
+      }
+      const files = absoluteLocation ? [absoluteLocation] : [];
       return {
         id: String(diagnostic?.code || 'inspect.issue.unknown'),
         severity: String(diagnostic?.severity || 'warning').toLowerCase(),
@@ -165,6 +177,7 @@ function runProcess(executable, args, cwd, timeoutMs, env = process.env) {
     });
     let stdout = '';
     let stderr = '';
+    let outputBytes = 0;
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
@@ -174,10 +187,26 @@ function runProcess(executable, args, cwd, timeoutMs, env = process.env) {
       error.code = 'ETIMEDOUT';
       reject(error);
     }, timeoutMs);
+    const capture = (channel, chunk) => {
+      if (settled) return;
+      const bytes = Buffer.byteLength(chunk, 'utf8');
+      if (bytes > MAX_PROCESS_OUTPUT_BYTES - outputBytes) {
+        settled = true;
+        clearTimeout(timer);
+        child.kill('SIGKILL');
+        const error = new Error('Zed command exceeded the 1 MiB combined output limit.');
+        error.code = 'EOUTPUTLIMIT';
+        reject(error);
+        return;
+      }
+      outputBytes += bytes;
+      if (channel === 'stdout') stdout += chunk;
+      else stderr += chunk;
+    };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stdout.on('data', (chunk) => capture('stdout', chunk));
+    child.stderr.on('data', (chunk) => capture('stderr', chunk));
     child.on('error', (error) => {
       if (settled) return;
       settled = true;
@@ -213,9 +242,22 @@ async function inspectWithCli(root, options = {}) {
 
 function directoryHasEntries(directory) {
   try {
-    return fs.statSync(directory).isDirectory() && fs.readdirSync(directory).length > 0;
+    // Never interpret a symlinked journal outside this workspace as a local
+    // recoverable transaction. A fallback report is not an authority to walk
+    // arbitrary directory links.
+    return fs.lstatSync(directory).isDirectory() && fs.readdirSync(directory).length > 0;
   } catch {
     return false;
+  }
+}
+
+// Only an existing regular file is a valid root package marker. A directory
+// or symlink with the right name is not a Zed manifest or immutable lock.
+function packageMarkerState(file) {
+  try {
+    return fs.lstatSync(file).isFile() ? 'file' : 'invalid';
+  } catch (error) {
+    return error?.code === 'ENOENT' ? 'missing' : 'invalid';
   }
 }
 
@@ -240,8 +282,18 @@ function fallbackReport(root, cliFailure = '') {
   const lock = path.join(absoluteRoot, '.zpkg.lock');
   const staging = path.join(absoluteRoot, '.zpkg-staging');
   const modules = path.join(absoluteRoot, 'zed_modules');
-  const hasManifest = fs.existsSync(manifest);
-  const hasLock = fs.existsSync(lock);
+  const nativeMarkers = ['.atto.pkg.toml', '.ores.pkg.toml']
+    .map((name) => path.join(absoluteRoot, name));
+  const nativeStates = nativeMarkers.map(packageMarkerState);
+  const nativePresent = nativeStates.filter((state) => state !== 'missing').length;
+  const nativeAmbiguous = nativePresent > 1;
+  const attoManifest = nativeMarkers.find((_, index) => nativeStates[index] === 'file');
+  const hasAttoLangProject = Boolean(attoManifest) && !nativeAmbiguous;
+  const manifestState = packageMarkerState(manifest);
+  const lockState = packageMarkerState(lock);
+  const hasManifest = manifestState === 'file';
+  const hasLock = lockState === 'file';
+  const unsafeMarkers = [manifestState === 'invalid' && manifest, lockState === 'invalid' && lock].filter(Boolean);
   const issues = [];
 
   const commandAction = (id, title, args, {requiresNetwork = true, executesPackageCode = args[0] === 'install'} = {}) => ({
@@ -250,17 +302,52 @@ function fallbackReport(root, cliFailure = '') {
     mutatesProject: true, requiresNetwork, executesPackageCode,
   });
 
-  if (!hasManifest && !hasLock) {
-    issues.push({id: 'ZED001', severity: 'info', title: 'Folder is not a Zed package', detail: 'No .zpkg.toml or .zpkg.lock was found.', files: [], actions: [commandAction('zed.init', 'Initialize package', ['init'], {requiresNetwork: false})]});
+  if (unsafeMarkers.length) {
+    issues.push({
+      id: 'ZED016', severity: 'error',
+      title: 'Unsafe package marker is not a local regular file',
+      detail: 'The Zed manifest or lockfile is a symlink, directory, or inaccessible entry; inspect it manually before installing or recovering packages.',
+      files: unsafeMarkers,
+      actions: [],
+    });
+  } else if (nativeAmbiguous) {
+    issues.push({
+      id: 'ZED017', severity: 'error',
+      title: 'Ambiguous native AttoLang project markers',
+      detail: 'Both canonical and legacy native project markers exist. Resolve the ambiguity manually before initializing or recovering packages.',
+      files: nativeMarkers, actions: [],
+    });
+  } else if (!hasManifest && !hasLock) {
+    issues.push({
+      id: 'ZED001',
+      severity: hasAttoLangProject ? 'warning' : 'info',
+      title: hasAttoLangProject ? 'AttoLang project needs a Zed package manifest' : 'Folder is not a Zed package',
+      detail: hasAttoLangProject
+        ? `Found ${path.basename(attoManifest)} but no .zpkg.toml or .zpkg.lock. Initialize Zed to manage AttoLang dependencies; the native manifest remains authoritative for compiler imports.`
+        : 'No .zpkg.toml or .zpkg.lock was found.',
+      files: hasAttoLangProject ? [attoManifest] : [],
+      actions: [commandAction('zed.init', 'Initialize package', ['init'], {requiresNetwork: false})],
+    });
   } else if (!hasManifest && hasLock) {
     issues.push({id: 'ZED002', severity: 'warning', title: 'Lockfile exists without a manifest', detail: 'Restore the frozen package state without generating a manifest.', files: [lock], actions: [commandAction('zed.restoreFrozen', 'Restore frozen state', ['install', '--frozen', '--do-not-write-new-manifest'])]});
   } else if (hasManifest && !hasLock) {
     issues.push({id: 'ZED003', severity: 'warning', title: 'Manifest has no lockfile', detail: 'Resolve and materialize the declared package graph.', files: [manifest], actions: [commandAction('zed.install', 'Install dependencies', ['install'])]});
   }
 
-  if (hasManifest) {
+  if (hasManifest && !unsafeMarkers.length && !nativeAmbiguous) {
     let manifestText = '';
-    try { manifestText = fs.readFileSync(manifest, 'utf8'); } catch (error) {
+    try {
+      // O_NOFOLLOW blocks a marker swapped to a symlink between lstat and
+      // open on platforms that provide it. Confirm the opened descriptor is
+      // still a regular file, not merely its previous pathname.
+      const descriptor = fs.openSync(manifest, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+      try {
+        if (!fs.fstatSync(descriptor).isFile()) throw new Error('Manifest is not a regular file');
+        manifestText = fs.readFileSync(descriptor, 'utf8');
+      } finally {
+        fs.closeSync(descriptor);
+      }
+    } catch (error) {
       issues.push({id: 'ZED013', severity: 'error', title: 'Manifest could not be read', detail: redact(error.message), files: [manifest], actions: []});
     }
     if (manifestText && !basicTomlLooksValid(manifestText)) {
@@ -271,9 +358,9 @@ function fallbackReport(root, cliFailure = '') {
     }
   }
 
-  if (hasManifest && hasLock) {
+  if (hasManifest && hasLock && !unsafeMarkers.length && !nativeAmbiguous) {
     try {
-      if (fs.statSync(manifest).mtimeMs > fs.statSync(lock).mtimeMs + 1) {
+      if (fs.lstatSync(manifest).mtimeMs > fs.lstatSync(lock).mtimeMs + 1) {
         issues.push({id: 'ZED004', severity: 'warning', title: 'Manifest is newer than the lockfile', detail: 'The lockfile may not reflect the current manifest.', files: [manifest, lock], actions: [commandAction('zed.install', 'Refresh lockfile', ['install'])]});
       }
     } catch (error) {
@@ -281,7 +368,7 @@ function fallbackReport(root, cliFailure = '') {
     }
   }
 
-  if (directoryHasEntries(staging)) {
+  if (!unsafeMarkers.length && !nativeAmbiguous && directoryHasEntries(staging)) {
     const args = ['install'];
     if (hasLock) args.push('--frozen');
     if (hasLock && !hasManifest) args.push('--do-not-write-new-manifest');
@@ -316,8 +403,15 @@ async function discoverPackageRoots(folders, options = {}) {
     seen.add(absolute);
     let entries;
     try { entries = await fsp.readdir(absolute, {withFileTypes: true}); } catch { return; }
-    const names = new Set(entries.map((entry) => entry.name));
-    if (names.has('.zpkg.toml') || names.has('.zpkg.lock')) roots.push(absolute);
+    // A native AttoLang project can adopt Zed before creating its Zed manifest.
+    // Only a local regular file counts: Dirent.isFile() rejects forged
+    // directories and external symlink markers without reading their targets.
+    // Discovery is read-only and does not imply a verified dependency graph.
+    const nativeMarker = entries.some((entry) =>
+      (entry.name === '.atto.pkg.toml' || entry.name === '.ores.pkg.toml') && entry.isFile());
+    const zedMarker = entries.some((entry) =>
+      (entry.name === '.zpkg.toml' || entry.name === '.zpkg.lock') && entry.isFile());
+    if (zedMarker || nativeMarker) roots.push(absolute);
     if (depth >= maxDepth) return;
     for (const entry of entries) {
       if (!entry.isDirectory() || IGNORED_DIRECTORIES.has(entry.name)) continue;
