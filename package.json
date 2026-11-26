@@ -27,6 +27,7 @@
     "onStartupFinished",
     "workspaceContains:**/.zpkg.toml",
     "workspaceContains:**/.zpkg.lock",
+    "workspaceContains:**/.atto.pkg.toml",
     "workspaceContains:**/.ores.pkg.toml"
   ],
   "scripts": {
